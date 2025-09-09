@@ -72,7 +72,7 @@ static void broadcast(const char *msg, size_t len, pid_t from_pid) {
                 if (write(c->fd_out, prefix, pref) < 0) {}
             }
             if (write(c->fd_out, msg, len) < 0) {}
-            if (msg[len-1] != '\n') write(c->fd_out, "\n", 1);
+            if (len > 0 && msg[len-1] != '\n') write(c->fd_out, "\n", 1);
         }
     }
 }
