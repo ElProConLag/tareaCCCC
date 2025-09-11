@@ -87,7 +87,8 @@ static void enviar_msg_texto(const char *texto) {
 
 static void enviar_report(int objetivo) {
     char linea[MAX_LINEA];
-    snprintf(linea, sizeof(linea), "reportar %d\n", objetivo);
+    // El servidor espera exactamente: "REPORT pid=<pid>\n"
+    snprintf(linea, sizeof(linea), "REPORT pid=%d\n", objetivo);
     write(fd_c2s, linea, strlen(linea));
 }
 

@@ -14,6 +14,10 @@
 #include <sys/select.h>
 #include <limits.h>
 
+#ifndef PATH_MAX
+#define PATH_MAX 256
+#endif
+
 // Constantes que se usan
 #define FIFO_REGISTRO "/tmp/chat_registro"
 #define RUTA_C2S "/tmp/c2s_%d"
@@ -31,8 +35,7 @@ typedef struct {
     int fd_s2c;                  
     char ruta_c2s[PATH_MAX];
     char ruta_s2c[PATH_MAX];
-    int activo;
-} Cliente;
+} cliente_t;
 
 // Funciones de ayuda, para llammar
 static inline void error_fatal(const char *msg) {
@@ -40,8 +43,4 @@ static inline void error_fatal(const char *msg) {
     exit(EXIT_FAILURE);
 }
 
-#ifndef PATH_MAX
-#define PATH_MAX 256
-#endif
-
-#endif
+#endif // COMUN_H
