@@ -19,6 +19,22 @@ static char ruta_c2s[PATH_MAX];
 static char ruta_s2c[PATH_MAX];
 static pid_t mi_pid = 0;
 
+// Escritura robusta: asegura enviar todo el buffer salvo error.
+static int write_full(int fd, const void *buf, size_t n) {
+    const char *p = (const char*)buf;
+    size_t total = 0;
+    while (total < n) {
+        ssize_t w = write(fd, p + total, n - total);
+        if (w < 0) {
+            if (errno == EINTR) continue; // reintentar
+            return -1; // error definitivo
+        }
+        if (w == 0) break; // no debería ocurrir con write
+        total += (size_t)w;
+    }
+    return (total == n) ? 0 : -1;
+}
+
 static void limpiar_y_salir(int code) {
     if (fd_c2s >= 0) close(fd_c2s);
     if (fd_s2c >= 0) close(fd_s2c);
@@ -35,10 +51,19 @@ static void registrar_en_servidor(void) {
         limpiar_y_salir(1);
     }
     char linea[MAX_LINEA];
-    snprintf(linea, sizeof(linea),
-             "REGISTER pid=%d c2s=%s s2c=%s\n",
-             (int)mi_pid, ruta_c2s, ruta_s2c);
-    write(fd_reg, linea, strlen(linea));
+    int n = snprintf(linea, sizeof(linea),
+                     "REGISTER pid=%d c2s=%s s2c=%s\n",
+                     (int)mi_pid, ruta_c2s, ruta_s2c);
+    if (n < 0 || n >= (int)sizeof(linea)) {
+        fprintf(stderr, "Linea REGISTER truncada o error.\n");
+        close(fd_reg);
+        limpiar_y_salir(1);
+    }
+    if (write_full(fd_reg, linea, (size_t)n) < 0) {
+        perror("write registro");
+        close(fd_reg);
+        limpiar_y_salir(1);
+    }
     close(fd_reg);
 }
 
@@ -81,23 +106,31 @@ static void enviar_msg_texto(const char *texto) {
     // recorta salto de línea final si viene
     size_t n = strlen(texto);
     while (n > 0 && (texto[n-1] == '\n' || texto[n-1] == '\r')) n--;
-    snprintf(linea, sizeof(linea), "MSG pid=%d text=%.*s\n", (int)mi_pid, (int)n, texto);
-    write(fd_c2s, linea, strlen(linea));
+    int m = snprintf(linea, sizeof(linea), "MSG pid=%d text=%.*s\n", (int)mi_pid, (int)n, texto);
+    if (m < 0 || m >= (int)sizeof(linea)) {
+        fprintf(stderr, "Mensaje demasiado largo, descartado.\n");
+        return;
+    }
+    if (write_full(fd_c2s, linea, (size_t)m) < 0) perror("write MSG");
 }
 
 static void enviar_report(int objetivo) {
     char linea[MAX_LINEA];
-    // El servidor espera exactamente: "REPORT pid=<pid>\n"
-    snprintf(linea, sizeof(linea), "REPORT pid=%d\n", objetivo);
-    write(fd_c2s, linea, strlen(linea));
+    int n = snprintf(linea, sizeof(linea), "REPORT pid=%d\n", objetivo);
+    if (n < 0 || n >= (int)sizeof(linea)) {
+        fprintf(stderr, "REPORT truncado.\n");
+        return;
+    }
+    if (write_full(fd_c2s, linea, (size_t)n) < 0) perror("write REPORT");
 }
 
 
 
 static void enviar_quit(void) {
     char linea[MAX_LINEA];
-    snprintf(linea, sizeof(linea), "QUIT pid=%d\n", (int)mi_pid);
-    write(fd_c2s, linea, strlen(linea));
+    int n = snprintf(linea, sizeof(linea), "QUIT pid=%d\n", (int)mi_pid);
+    if (n < 0 || n >= (int)sizeof(linea)) return;
+    if (write_full(fd_c2s, linea, (size_t)n) < 0) perror("write QUIT");
 }
 
 static void bucle(void);
@@ -151,7 +184,10 @@ static void bucle(void) {
             char buf[256];
             ssize_t n = read(fd_s2c, buf, sizeof(buf));
             if (n > 0) {
-                write(1, buf, n); // imprimir tal cual
+                if (write_full(STDOUT_FILENO, buf, (size_t)n) < 0) {
+                    perror("write stdout");
+                    break;
+                } // imprimir tal cual
             } else if (n == 0) {
                 // servidor cerró
                 printf("Servidor cerró conexión.\n");

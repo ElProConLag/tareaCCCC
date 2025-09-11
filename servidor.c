@@ -21,8 +21,8 @@
 
 typedef struct {
     pid_t pid;
-    int fd_c2s;               // lectura desde cliente
-    int fd_s2c;               // escritura hacia cliente
+    int fd_c2s; // lectura desde cliente
+    int fd_s2c; // escritura hacia cliente
     char ruta_c2s[PATH_MAX];
     char ruta_s2c[PATH_MAX];
     int activo;
@@ -31,12 +31,15 @@ typedef struct {
 static RegCliente clientes[MAX_CLIENTES];
 static int n_clientes = 0;
 
-static int fd_reg = -1;       // FIFO de registro (lectura)
+static int fd_reg = -1; // FIFO de registro (lectura)
 static FILE *logf = NULL;
 
+// Prototipo adelantado para funciones usadas antes de su definición
+static void cerrar_cliente(int i);
+
 // pipes con proceso de reportes
-static int p_srv_rep[2] = {-1,-1};   // servidor escribe REPORT
-static int p_rep_srv[2] = {-1,-1};   // reportes escribe KILLED
+static int p_srv_rep[2] = {-1,-1}; // servidor escribe REPORT
+static int p_rep_srv[2] = {-1,-1}; // reportes escribe KILLED
 static pid_t pid_rep = -1;
 
 /* Utilidades mínimas */
@@ -47,9 +50,22 @@ static int idx_por_pid(pid_t pid) {
 }
 
 static void difundir(const char *linea) {
+    size_t len = strlen(linea);
     for (int i = 0; i < n_clientes; ++i) {
         if (!clientes[i].activo) continue;
-        write(clientes[i].fd_s2c, linea, strlen(linea));
+        const char *p = linea;
+        size_t enviado = 0;
+        while (enviado < len) {
+            ssize_t w = write(clientes[i].fd_s2c, p + enviado, len - enviado);
+            if (w < 0) {
+                if (errno == EINTR) continue; // reintentar misma porción
+                // error: cerramos ese cliente para no bloquear difusión
+                cerrar_cliente(i);
+                break;
+            }
+            if (w == 0) break;
+            enviado += (size_t)w;
+        }
     }
 }
 
@@ -61,7 +77,7 @@ static void cerrar_cliente(int i) {
     clientes[i].activo = 0;
 }
 
-/* ---- Proceso secundario de reportes (simple) ----
+/* Proceso secundario de reportes (simple)
    Cuenta "REPORT pid=X". Si cuenta >10 => kill(X) y notifica "KILLED pid=X\n".
 */
 static void proceso_reportes(void) {
@@ -96,7 +112,7 @@ static void proceso_reportes(void) {
     _exit(0);
 }
 
-/* ---- Registro de nuevos clientes ---- */
+/* Registro de nuevos clientes */
 static void abrir_fifo_registro(void) {
     // crea si no existe
     if (mkfifo(FIFO_REGISTRO, 0666) < 0 && errno != EEXIST) {
@@ -133,8 +149,13 @@ static void procesar_register_linea(const char *linea) {
     char r1[PATH_MAX], r2[PATH_MAX];
     if (sscanf(linea, "REGISTER pid=%d c2s=%s s2c=%s", &pid, r1, r2) == 3) {
         c.pid = (pid_t)pid;
-        strncpy(c.ruta_c2s, r1, sizeof(c.ruta_c2s)-1);
-        strncpy(c.ruta_s2c, r2, sizeof(c.ruta_s2c)-1);
+        // Copias seguras asegurando terminador y detectando truncamiento
+        int n1 = snprintf(c.ruta_c2s, sizeof(c.ruta_c2s), "%s", r1);
+        int n2 = snprintf(c.ruta_s2c, sizeof(c.ruta_s2c), "%s", r2);
+        if (n1 < 0 || n2 < 0 || n1 >= (int)sizeof(c.ruta_c2s) || n2 >= (int)sizeof(c.ruta_s2c)) {
+            // Rutas demasiado largas; descartamos el registro
+            return;
+        }
         if (n_clientes < MAX_CLIENTES && abrir_pares(&c) == 0) {
             clientes[n_clientes++] = c;
             // no imprimimos JOIN, solo logeamos sencillo
@@ -143,7 +164,7 @@ static void procesar_register_linea(const char *linea) {
     }
 }
 
-/* ---- Manejo de mensajes de clientes ---- */
+/* Manejo de mensajes de clientes */
 static void manejar_linea_cliente(int i, const char *linea) {
     // MSG, REPORT, QUIT
     pid_t pid = clientes[i].pid;
@@ -167,7 +188,7 @@ static void manejar_linea_cliente(int i, const char *linea) {
     }
 }
 
-/* ---- Manejo de mensajes desde proceso de reportes ---- */
+/* Manejo de mensajes desde proceso de reportes */
 static void manejar_linea_reportes(const char *linea) {
     int pid = -1;
     if (sscanf(linea, "KILLED pid=%d", &pid) == 1 && pid > 0) {

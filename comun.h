@@ -1,7 +1,6 @@
 // comun.h
 #ifndef COMUN_H
 #define COMUN_H
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -13,7 +12,6 @@
 #include <errno.h>
 #include <sys/select.h>
 #include <limits.h>
-
 #ifndef PATH_MAX
 #define PATH_MAX 256
 #endif
@@ -43,4 +41,4 @@ static inline void error_fatal(const char *msg) {
     exit(EXIT_FAILURE);
 }
 
-#endif // COMUN_H
+#endif
