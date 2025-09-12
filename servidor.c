@@ -186,7 +186,7 @@ static void manejar_linea_reportes(const char *linea) {
 }
 
 int main(void) {
-    // log
+    // log (unstable)
     logf = fopen("chat.log", "a");
 
     // fifo de registro

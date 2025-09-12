@@ -34,7 +34,6 @@ El servidor:
 - Acepta registros leyendo líneas `REGISTER ...` desde la FIFO global `/tmp/chat_registro` (no bloqueante). Cada registro incluye PID y rutas de dos FIFOs específicas del cliente (c2s y s2c).
 - Abre para cada cliente: FIFO cliente→servidor (lectura no bloqueante) y servidor→cliente (escritura). Usa `select()` para multiplexar: registro, mensajes de clientes y canal de retorno del subsistema de reportes.
 - Difunde mensajes de chat formateados como `CHAT from=<pid> text=...` a todos los clientes activos.
-- Lleva un log en `chat.log` con eventos: registros (`REG`), chats, salidas (`QUIT`), y eliminaciones (`KILLED`).
 - Opera un proceso hijo dedicado a la lógica de reportes (ver sección 2.4) comunicado mediante dos pipes unidireccionales.
 
 ### 2.2 Procesos participantes (clientes del chat)
