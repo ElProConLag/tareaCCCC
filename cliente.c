@@ -1,39 +1,11 @@
-// cliente.c
-#include "comun.h"
 
-/*
- * Cliente mínimo:
- * - Crea sus FIFOs: /tmp/c2s_<pid> y /tmp/s2c_<pid>
- * - Se registra en /tmp/chat_registro
- * - Bucle con select(): lee teclado y lee s2c
- * - Comandos:
- *     texto libre          -> MSG
- *     /report <pid>        -> REPORT
- *     /quit                -> QUIT y salir
- *     /fork                -> duplica proceso y el hijo se registra aparte
- */
+#include "comun.h"
 
 static int fd_c2s = -1;       // write -> servidor
 static int fd_s2c = -1;       // read  <- servidor
 static char ruta_c2s[PATH_MAX];
 static char ruta_s2c[PATH_MAX];
 static pid_t mi_pid = 0;
-
-// Escritura robusta: asegura enviar todo el buffer salvo error.
-static int write_full(int fd, const void *buf, size_t n) {
-    const char *p = (const char*)buf;
-    size_t total = 0;
-    while (total < n) {
-        ssize_t w = write(fd, p + total, n - total);
-        if (w < 0) {
-            if (errno == EINTR) continue; // reintentar
-            return -1; // error definitivo
-        }
-        if (w == 0) break; // no debería ocurrir con write
-        total += (size_t)w;
-    }
-    return (total == n) ? 0 : -1;
-}
 
 static void limpiar_y_salir(int code) {
     if (fd_c2s >= 0) close(fd_c2s);
@@ -44,39 +16,30 @@ static void limpiar_y_salir(int code) {
 }
 
 static void registrar_en_servidor(void) {
-    // abrir FIFO de registro para escribir una sola línea
     int fd_reg = open(FIFO_REGISTRO, O_WRONLY);
     if (fd_reg < 0) {
         perror("open registro");
         limpiar_y_salir(1);
     }
     char linea[MAX_LINEA];
-    int n = snprintf(linea, sizeof(linea),
-                     "REGISTER pid=%d c2s=%s s2c=%s\n",
-                     (int)mi_pid, ruta_c2s, ruta_s2c);
-    if (n < 0 || n >= (int)sizeof(linea)) {
-        fprintf(stderr, "Linea REGISTER truncada o error.\n");
-        close(fd_reg);
-        limpiar_y_salir(1);
-    }
-    if (write_full(fd_reg, linea, (size_t)n) < 0) {
-        perror("write registro");
-        close(fd_reg);
-        limpiar_y_salir(1);
-    }
+    snprintf(linea, sizeof(linea),
+             "REGISTER pid=%d c2s=%s s2c=%s\n",
+             (int)mi_pid, ruta_c2s, ruta_s2c);
+    (void)write(fd_reg, linea, strlen(linea));
     close(fd_reg);
 }
 
 static void preparar_fifos_y_conectar(void) {
-    // construir rutas
+    
+    // se construyen  rutas
     snprintf(ruta_c2s, sizeof(ruta_c2s), RUTA_C2S, (int)mi_pid);
     snprintf(ruta_s2c, sizeof(ruta_s2c), RUTA_S2C, (int)mi_pid);
 
-    // crear FIFOs (ignorar si ya existen)
+    // crear FIFOs y se ignora si ya existen
     if (mkfifo(ruta_c2s, 0666) < 0 && errno != EEXIST) { perror("mkfifo c2s"); exit(1); }
     if (mkfifo(ruta_s2c, 0666) < 0 && errno != EEXIST) { perror("mkfifo s2c"); exit(1); }
 
-    // 1) REGISTRARSE PRIMERO (servidor sabrá que debe abrir estos FIFOs)
+    // 1) REGISTRARSE PRIMERO 
     registrar_en_servidor();
 
     // 2) Abrir c2s en escritura **no bloqueante** con reintentos
@@ -100,37 +63,27 @@ static void preparar_fifos_y_conectar(void) {
     if (fd_s2c < 0) { fprintf(stderr, "No pude abrir %s para leer\n", ruta_s2c); limpiar_y_salir(1); }
 }
 
-
 static void enviar_msg_texto(const char *texto) {
     char linea[MAX_LINEA];
     // recorta salto de línea final si viene
     size_t n = strlen(texto);
     while (n > 0 && (texto[n-1] == '\n' || texto[n-1] == '\r')) n--;
-    int m = snprintf(linea, sizeof(linea), "MSG pid=%d text=%.*s\n", (int)mi_pid, (int)n, texto);
-    if (m < 0 || m >= (int)sizeof(linea)) {
-        fprintf(stderr, "Mensaje demasiado largo, descartado.\n");
-        return;
-    }
-    if (write_full(fd_c2s, linea, (size_t)m) < 0) perror("write MSG");
+    if (n == 0) return; // no enviar si está vacío
+    snprintf(linea, sizeof(linea), "MSG pid=%d text=%.*s\n", (int)mi_pid, (int)n, texto);
+    (void)write(fd_c2s, linea, strlen(linea));
 }
 
 static void enviar_report(int objetivo) {
     char linea[MAX_LINEA];
-    int n = snprintf(linea, sizeof(linea), "REPORT pid=%d\n", objetivo);
-    if (n < 0 || n >= (int)sizeof(linea)) {
-        fprintf(stderr, "REPORT truncado.\n");
-        return;
-    }
-    if (write_full(fd_c2s, linea, (size_t)n) < 0) perror("write REPORT");
+    snprintf(linea, sizeof(linea), "reportar %d\n", objetivo); // formato literal de la pauta
+    (void)write(fd_c2s, linea, strlen(linea));
 }
-
 
 
 static void enviar_quit(void) {
     char linea[MAX_LINEA];
-    int n = snprintf(linea, sizeof(linea), "QUIT pid=%d\n", (int)mi_pid);
-    if (n < 0 || n >= (int)sizeof(linea)) return;
-    if (write_full(fd_c2s, linea, (size_t)n) < 0) perror("write QUIT");
+    snprintf(linea, sizeof(linea), "QUIT pid=%d\n", (int)mi_pid);
+    (void)write(fd_c2s, linea, strlen(linea));
 }
 
 static void bucle(void);
@@ -143,7 +96,6 @@ static void manejar_fork(void) {
     }
     if (h == 0) {
         // hijo: nuevo participante independiente
-        // cerrar FDs heredados del padre para no interferir
         if (fd_c2s >= 0) close(fd_c2s);
         if (fd_s2c >= 0) close(fd_s2c);
         fd_c2s = fd_s2c = -1;
@@ -153,7 +105,6 @@ static void manejar_fork(void) {
         preparar_fifos_y_conectar();
         printf("[hijo %d] conectado.\n", (int)mi_pid);
         bucle();  // el hijo entra a su propio bucle
-        // no vuelve
         exit(0);
     } else {
         // padre continúa normal
@@ -180,16 +131,11 @@ static void bucle(void) {
 
         // Entrada del servidor
         if (FD_ISSET(fd_s2c, &rfds)) {
-            // leer y mostrar en stdout
             char buf[256];
             ssize_t n = read(fd_s2c, buf, sizeof(buf));
             if (n > 0) {
-                if (write_full(STDOUT_FILENO, buf, (size_t)n) < 0) {
-                    perror("write stdout");
-                    break;
-                } // imprimir tal cual
+                (void)write(1, buf, n); // imprimir
             } else if (n == 0) {
-                // servidor cerró
                 printf("Servidor cerró conexión.\n");
                 break;
             }
@@ -198,20 +144,24 @@ static void bucle(void) {
         // Teclado
             if (FD_ISSET(0, &rfds)) {
                 if (!fgets(buf_in, sizeof(buf_in), stdin)) {
-                    // EOF de stdin
                     enviar_quit();
                     break;
                 }
-                // comandos simples
+
                 if (strncmp(buf_in, "/quit", 5) == 0) {
                     enviar_quit();
                     break;
 
-                } else if (strncmp(buf_in, "/reportar ", 10) == 0 || strncmp(buf_in, "/report ", 8) == 0) {
-                    const char *p = (strncmp(buf_in, "/reportar ", 10) == 0) ? buf_in + 10 : buf_in + 8;
-                    int objetivo = atoi(p);
-                    if (objetivo > 0) {
-                        enviar_report(objetivo);   // debe enviar "reportar <pid>\n"
+                } else if (strncmp(buf_in, "/reportar", 9) == 0 || strncmp(buf_in, "/report", 7) == 0) {
+                    int objetivo = 0;
+                    // Se intentan 4 formas de report: "/reportar <pid>", "/reportar pid", "/report <pid>", "/report pid"
+                    if (sscanf(buf_in, "/reportar <%d>", &objetivo) != 1 &&
+                        sscanf(buf_in, "/reportar %d",   &objetivo) != 1 &&
+                        sscanf(buf_in, "/report <%d>",   &objetivo) != 1 &&
+                        sscanf(buf_in, "/report %d",     &objetivo) != 1) {
+                        printf("Uso: /reportar <pid>\n");
+                    } else if (objetivo > 0) {
+                        enviar_report(objetivo);   // NO envia mensaje, sino  que "reportar <pid>\n"
                     } else {
                         printf("Uso: /reportar <pid>\n");
                     }
@@ -220,22 +170,20 @@ static void bucle(void) {
                     manejar_fork();
 
                 } else {
-                    enviar_msg_texto(buf_in);
+                    enviar_msg_texto(buf_in);  // texto libre -> MSG
                 }
             }
-
-    }
 
     limpiar_y_salir(0);
 }
 
-int main(void) {
+int main(void) ; {
     mi_pid = getpid();
     printf("Cliente %d iniciando...\n", (int)mi_pid); fflush(stdout);
 
     preparar_fifos_y_conectar();
 
-    printf("Cliente %d listo. Comandos: /report <pid>, /fork, /quit\n", (int)mi_pid);
+    printf("Cliente %d listo. Comandos: /reportar <pid> (o /report), /fork, /quit\n", (int)mi_pid);
     fflush(stdout);
 
     bucle();

@@ -1,28 +1,13 @@
-// servidor.c (versión simple)
 #include "comun.h"
 
-/*
- * Requisitos que cumple:
- * - Proceso central con log (chat.log)
- * - Registro de clientes por FIFO nombrado /tmp/chat_registro
- * - Clientes conectan por pares de FIFOs (c2s_<pid>, s2c_<pid>)
- * - Multiplexación con select() sin threads
- * - Proceso secundario de reportes: si un pid acumula >10, kill
- *
- * Protocolos (líneas terminadas en '\n'):
- *   REGISTER pid=<pid> c2s=<ruta> s2c=<ruta>
- *   MSG pid=<pid> text=<texto>
- *   REPORT pid=<pid>
- *   QUIT pid=<pid>
- *
- * Difusión a clientes (simple):
- *   CHAT from=<pid> text=<texto>
- */
+#define MAX_ENTRADAS_REPORTES 256  // evita numero maagico 256
 
 typedef struct {
     pid_t pid;
-    int fd_c2s; // lectura desde cliente
-    int fd_s2c; // escritura hacia cliente
+    // lectura desde cliente
+    int fd_c2s;  
+    // escritura hacia cliente
+    int fd_s2c;               
     char ruta_c2s[PATH_MAX];
     char ruta_s2c[PATH_MAX];
     int activo;
@@ -31,18 +16,16 @@ typedef struct {
 static RegCliente clientes[MAX_CLIENTES];
 static int n_clientes = 0;
 
-static int fd_reg = -1; // FIFO de registro (lectura)
+// FIFO de registro, la lectura
+static int fd_reg = -1;       
 static FILE *logf = NULL;
 
-// Prototipo adelantado para funciones usadas antes de su definición
-static void cerrar_cliente(int i);
-
 // pipes con proceso de reportes
-static int p_srv_rep[2] = {-1,-1}; // servidor escribe REPORT
-static int p_rep_srv[2] = {-1,-1}; // reportes escribe KILLED
+static int p_srv_rep[2] = {-1,-1};   // servidor escribe REPORT
+static int p_rep_srv[2] = {-1,-1};   // reportes escribe KILLED
 static pid_t pid_rep = -1;
 
-/* Utilidades mínimas */
+// Utilidades minimas
 static int idx_por_pid(pid_t pid) {
     for (int i = 0; i < n_clientes; ++i)
         if (clientes[i].activo && clientes[i].pid == pid) return i;
@@ -50,22 +33,9 @@ static int idx_por_pid(pid_t pid) {
 }
 
 static void difundir(const char *linea) {
-    size_t len = strlen(linea);
     for (int i = 0; i < n_clientes; ++i) {
         if (!clientes[i].activo) continue;
-        const char *p = linea;
-        size_t enviado = 0;
-        while (enviado < len) {
-            ssize_t w = write(clientes[i].fd_s2c, p + enviado, len - enviado);
-            if (w < 0) {
-                if (errno == EINTR) continue; // reintentar misma porción
-                // error: cerramos ese cliente para no bloquear difusión
-                cerrar_cliente(i);
-                break;
-            }
-            if (w == 0) break;
-            enviado += (size_t)w;
-        }
+        (void)write(clientes[i].fd_s2c, linea, strlen(linea));
     }
 }
 
@@ -77,9 +47,7 @@ static void cerrar_cliente(int i) {
     clientes[i].activo = 0;
 }
 
-/* Proceso secundario de reportes (simple)
-   Cuenta "REPORT pid=X". Si cuenta >10 => kill(X) y notifica "KILLED pid=X\n".
-*/
+/*Proceso secundario de reportes */
 static void proceso_reportes(void) {
     close(p_srv_rep[1]);  // lee de [0]
     close(p_rep_srv[0]);  // escribe en [1]
@@ -88,7 +56,10 @@ static void proceso_reportes(void) {
     FILE *out = fdopen(p_rep_srv[1], "w");
     if (!in || !out) _exit(1);
 
-    pid_t pids[256]; int cnt[256]; int m = 0;
+    pid_t pids[MAX_ENTRADAS_REPORTES];
+    int   cnt[MAX_ENTRADAS_REPORTES];
+    int   m = 0;
+
     char linea[MAX_LINEA];
 
     while (fgets(linea, sizeof(linea), in)) {
@@ -96,7 +67,7 @@ static void proceso_reportes(void) {
         if (sscanf(linea, "REPORT pid=%d", &objetivo) == 1 && objetivo > 0) {
             int k;
             for (k = 0; k < m; ++k) if (pids[k] == (pid_t)objetivo) break;
-            if (k == m && m < 256) { pids[m] = (pid_t)objetivo; cnt[m] = 0; m++; }
+            if (k == m && m < MAX_ENTRADAS_REPORTES) { pids[m] = (pid_t)objetivo; cnt[m] = 0; m++; }
             if (k < m) {
                 cnt[k]++;
                 if (cnt[k] > 10) {
@@ -112,9 +83,9 @@ static void proceso_reportes(void) {
     _exit(0);
 }
 
-/* Registro de nuevos clientes */
+/*Registro de nuevos clientes */
 static void abrir_fifo_registro(void) {
-    // crea si no existe
+    // crea si no existe el cliente
     if (mkfifo(FIFO_REGISTRO, 0666) < 0 && errno != EEXIST) {
         error_fatal("mkfifo registro");
     }
@@ -149,46 +120,56 @@ static void procesar_register_linea(const char *linea) {
     char r1[PATH_MAX], r2[PATH_MAX];
     if (sscanf(linea, "REGISTER pid=%d c2s=%s s2c=%s", &pid, r1, r2) == 3) {
         c.pid = (pid_t)pid;
-        // Copias seguras asegurando terminador y detectando truncamiento
-        int n1 = snprintf(c.ruta_c2s, sizeof(c.ruta_c2s), "%s", r1);
-        int n2 = snprintf(c.ruta_s2c, sizeof(c.ruta_s2c), "%s", r2);
-        if (n1 < 0 || n2 < 0 || n1 >= (int)sizeof(c.ruta_c2s) || n2 >= (int)sizeof(c.ruta_s2c)) {
-            // Rutas demasiado largas; descartamos el registro
-            return;
-        }
+        strncpy(c.ruta_c2s, r1, sizeof(c.ruta_c2s)-1);
+        strncpy(c.ruta_s2c, r2, sizeof(c.ruta_s2c)-1);
         if (n_clientes < MAX_CLIENTES && abrir_pares(&c) == 0) {
             clientes[n_clientes++] = c;
-            // no imprimimos JOIN, solo logeamos sencillo
             if (logf) fprintf(logf, "REG pid=%d\n", (int)c.pid);
         }
     }
 }
 
-/* Manejo de mensajes de clientes */
+/* Manejo de mensajes de los clientes */
 static void manejar_linea_cliente(int i, const char *linea) {
-    // MSG, REPORT, QUIT
+    // MSG, reportar <pid>, REPORT pid=<pid>, QUIT
     pid_t pid = clientes[i].pid;
 
     if (strncmp(linea, "MSG ", 4) == 0) {
-        // difundir tal cual pero con formato CHAT
+        // difundir tal cual pero con formato CHAT, solo en una sola linea
         const char *ptext = strstr(linea, "text=");
         if (!ptext) return;
         char out[MAX_LINEA];
-        snprintf(out, sizeof(out), "CHAT from=%d %s", (int)pid, ptext);
+        int len = snprintf(out, sizeof(out), "CHAT from=%d %s", (int)pid, ptext);
+        if (len > 0 && out[len-1] != '\n' && len < (int)sizeof(out)-1) {
+            out[len++] = '\n';
+            out[len] = '\0';
+        }
         difundir(out);
         if (logf) fprintf(logf, "%s", out);
+
     } else if (strncmp(linea, "REPORT ", 7) == 0) {
         int objetivo = -1;
         if (sscanf(linea, "REPORT pid=%d", &objetivo) == 1 && objetivo > 0) {
             dprintf(p_srv_rep[1], "REPORT pid=%d\n", objetivo);
         }
+
+    } else if (strncmp(linea, "reportar", 8) == 0) {
+        // acepta dos formatos: "reportar <pid>" y "reportar pid"
+        int objetivo = 0;
+        if (sscanf(linea, "reportar <%d>", &objetivo) != 1) {
+            sscanf(linea, "reportar %d", &objetivo);
+        }
+        if (objetivo > 0) {
+            dprintf(p_srv_rep[1], "REPORT pid=%d\n", objetivo);
+        }
+
     } else if (strncmp(linea, "QUIT", 4) == 0) {
         if (logf) fprintf(logf, "QUIT pid=%d\n", (int)pid);
         cerrar_cliente(i);
     }
 }
 
-/* Manejo de mensajes desde proceso de reportes */
+/*Manejo de mensajes desde proceso de reportes*/
 static void manejar_linea_reportes(const char *linea) {
     int pid = -1;
     if (sscanf(linea, "KILLED pid=%d", &pid) == 1 && pid > 0) {
@@ -196,7 +177,7 @@ static void manejar_linea_reportes(const char *linea) {
         if (i >= 0) {
             cerrar_cliente(i);
         }
-        // avisamos a todos de forma simple
+        // se avisa
         char out[64];
         snprintf(out, sizeof(out), "CHAT from=0 text=KILLED %d\n", pid);
         difundir(out);
@@ -205,7 +186,7 @@ static void manejar_linea_reportes(const char *linea) {
 }
 
 int main(void) {
-    // log simple
+    // log
     logf = fopen("chat.log", "a");
 
     // fifo de registro
@@ -219,10 +200,8 @@ int main(void) {
     if (pid_rep < 0) error_fatal("fork");
     if (pid_rep == 0) {
         // hijo: reportes
-        // cerrar extremos del servidor
         close(p_srv_rep[1]);
         close(p_rep_srv[0]);
-        // desasociar registro/log
         proceso_reportes();
         return 0;
     }
@@ -259,12 +238,12 @@ int main(void) {
             error_fatal("select");
         }
 
-        // registro: puede haber varias líneas
+        // registro: puede haber varias lineas
         if (FD_ISSET(fd_reg, &rfds)) {
             while (fgets(linea, sizeof(linea), reg_in)) {
                 procesar_register_linea(linea);
             }
-            // si EOF, reabrimos para seguir aceptando futuros clientes
+            // si EOF, se reabre para seguir aceptando futuros clientes
             reabrir_fifo_registro_si_eof(&reg_in);
         }
 
@@ -273,7 +252,7 @@ int main(void) {
             while (fgets(linea, sizeof(linea), rep_in)) {
                 manejar_linea_reportes(linea);
             }
-            clearerr(rep_in); // si no hay nada más, limpiar error/EOF
+            clearerr(rep_in); // si no hay nada maas, limpiar error / EOF
         }
 
         // clientes
@@ -282,7 +261,7 @@ int main(void) {
             int fd = clientes[i].fd_c2s;
             if (!FD_ISSET(fd, &rfds)) continue;
 
-            // leemos líneas disponibles (usamos FILE* temporal)
+            // Se leen lneas disponibles, se esta utilizando FILE* temporal
             FILE *fin = fdopen(dup(fd), "r");
             if (!fin) continue;
             while (fgets(linea, sizeof(linea), fin)) {
@@ -293,7 +272,6 @@ int main(void) {
         }
     }
 
-    // (no llegamos acá en la versión simple)
     if (logf) fclose(logf);
     return 0;
 }
