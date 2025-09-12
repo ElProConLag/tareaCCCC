@@ -7,6 +7,25 @@ static char ruta_c2s[PATH_MAX];
 static char ruta_s2c[PATH_MAX];
 static pid_t mi_pid = 0;
 
+// Escribe todo el buffer manejando escrituras parciales e interrupciones.
+static int write_full(int fd, const void *buf, size_t len) {
+    const unsigned char *p = (const unsigned char*)buf;
+    size_t total = 0;
+    while (total < len) {
+        ssize_t w = write(fd, p + total, len - total);
+        if (w < 0) {
+            if (errno == EINTR) continue; // reintentar
+            return -1; // error definitivo
+        }
+        if (w == 0) {
+            // no debería pasar con FIFO abierto, evitar loop infinito
+            break;
+        }
+        total += (size_t)w;
+    }
+    return (total == len) ? 0 : -1;
+}
+
 static void limpiar_y_salir(int code) {
     if (fd_c2s >= 0) close(fd_c2s);
     if (fd_s2c >= 0) close(fd_s2c);
@@ -22,10 +41,19 @@ static void registrar_en_servidor(void) {
         limpiar_y_salir(1);
     }
     char linea[MAX_LINEA];
-    snprintf(linea, sizeof(linea),
-             "REGISTER pid=%d c2s=%s s2c=%s\n",
-             (int)mi_pid, ruta_c2s, ruta_s2c);
-    (void)write(fd_reg, linea, strlen(linea));
+    int n = snprintf(linea, sizeof(linea),
+                     "REGISTER pid=%d c2s=%s s2c=%s\n",
+                     (int)mi_pid, ruta_c2s, ruta_s2c);
+    if (n < 0 || (size_t)n >= sizeof(linea)) {
+        fprintf(stderr, "Linea de registro truncada; abortando.\n");
+        close(fd_reg);
+        limpiar_y_salir(1);
+    }
+    if (write_full(fd_reg, linea, (size_t)n) < 0) {
+        perror("write registro");
+        close(fd_reg);
+        limpiar_y_salir(1);
+    }
     close(fd_reg);
 }
 
@@ -70,20 +98,23 @@ static void enviar_msg_texto(const char *texto) {
     while (n > 0 && (texto[n-1] == '\n' || texto[n-1] == '\r')) n--;
     if (n == 0) return; // no enviar si está vacío
     snprintf(linea, sizeof(linea), "MSG pid=%d text=%.*s\n", (int)mi_pid, (int)n, texto);
-    (void)write(fd_c2s, linea, strlen(linea));
+    size_t len = strlen(linea);
+    if (write_full(fd_c2s, linea, len) < 0) perror("write MSG");
 }
 
 static void enviar_report(int objetivo) {
     char linea[MAX_LINEA];
     snprintf(linea, sizeof(linea), "reportar %d\n", objetivo); // formato literal de la pauta
-    (void)write(fd_c2s, linea, strlen(linea));
+    size_t len = strlen(linea);
+    if (write_full(fd_c2s, linea, len) < 0) perror("write report");
 }
 
 
 static void enviar_quit(void) {
     char linea[MAX_LINEA];
     snprintf(linea, sizeof(linea), "QUIT pid=%d\n", (int)mi_pid);
-    (void)write(fd_c2s, linea, strlen(linea));
+    size_t len = strlen(linea);
+    if (write_full(fd_c2s, linea, len) < 0) perror("write quit");
 }
 
 static void bucle(void);
@@ -134,7 +165,7 @@ static void bucle(void) {
             char buf[256];
             ssize_t n = read(fd_s2c, buf, sizeof(buf));
             if (n > 0) {
-                (void)write(1, buf, n); // imprimir
+                if (write_full(1, buf, (size_t)n) < 0) perror("write stdout"); // imprimir
             } else if (n == 0) {
                 printf("Servidor cerró conexión.\n");
                 break;
@@ -142,42 +173,42 @@ static void bucle(void) {
         }
 
         // Teclado
-            if (FD_ISSET(0, &rfds)) {
-                if (!fgets(buf_in, sizeof(buf_in), stdin)) {
-                    enviar_quit();
-                    break;
-                }
-
-                if (strncmp(buf_in, "/quit", 5) == 0) {
-                    enviar_quit();
-                    break;
-
-                } else if (strncmp(buf_in, "/reportar", 9) == 0 || strncmp(buf_in, "/report", 7) == 0) {
-                    int objetivo = 0;
-                    // Se intentan 4 formas de report: "/reportar <pid>", "/reportar pid", "/report <pid>", "/report pid"
-                    if (sscanf(buf_in, "/reportar <%d>", &objetivo) != 1 &&
-                        sscanf(buf_in, "/reportar %d",   &objetivo) != 1 &&
-                        sscanf(buf_in, "/report <%d>",   &objetivo) != 1 &&
-                        sscanf(buf_in, "/report %d",     &objetivo) != 1) {
-                        printf("Uso: /reportar <pid>\n");
-                    } else if (objetivo > 0) {
-                        enviar_report(objetivo);   // NO envia mensaje, sino  que "reportar <pid>\n"
-                    } else {
-                        printf("Uso: /reportar <pid>\n");
-                    }
-
-                } else if (strncmp(buf_in, "/fork", 5) == 0) {
-                    manejar_fork();
-
-                } else {
-                    enviar_msg_texto(buf_in);  // texto libre -> MSG
-                }
+        if (FD_ISSET(0, &rfds)) {
+            if (!fgets(buf_in, sizeof(buf_in), stdin)) {
+                enviar_quit();
+                break;
             }
 
+            if (strncmp(buf_in, "/quit", 5) == 0) {
+                enviar_quit();
+                break;
+
+            } else if (strncmp(buf_in, "/reportar", 9) == 0 || strncmp(buf_in, "/report", 7) == 0) {
+                int objetivo = 0;
+                // Se intentan 4 formas de report: "/reportar <pid>", "/reportar pid", "/report <pid>", "/report pid"
+                if (sscanf(buf_in, "/reportar <%d>", &objetivo) != 1 &&
+                    sscanf(buf_in, "/reportar %d",   &objetivo) != 1 &&
+                    sscanf(buf_in, "/report <%d>",   &objetivo) != 1 &&
+                    sscanf(buf_in, "/report %d",     &objetivo) != 1) {
+                    printf("Uso: /reportar <pid>\n");
+                } else if (objetivo > 0) {
+                    enviar_report(objetivo);   // NO envia mensaje, sino  que "reportar <pid>\n"
+                } else {
+                    printf("Uso: /reportar <pid>\n");
+                }
+
+            } else if (strncmp(buf_in, "/fork", 5) == 0) {
+                manejar_fork();
+
+            } else {
+                enviar_msg_texto(buf_in);  // texto libre -> MSG
+            }
+        }
+    }
     limpiar_y_salir(0);
 }
 
-int main(void) ; {
+int main(void) {
     mi_pid = getpid();
     printf("Cliente %d iniciando...\n", (int)mi_pid); fflush(stdout);
 
@@ -187,5 +218,4 @@ int main(void) ; {
     fflush(stdout);
 
     bucle();
-    return 0;
 }
