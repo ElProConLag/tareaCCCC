@@ -59,7 +59,6 @@ Cada cliente:
 - El servidor al recibir `KILLED`:
   1. Desactiva al cliente (cierra sus FIFOs).
   2. Difunde por chat `CHAT from=0 text=KILLED <pid>` (indicando acción del sistema).
-  3. Registra el evento en `chat.log`.
 - El umbral >10 es configurable cambiando la condición `if (cnt[k] > 10)` en `servidor.c`.
 
 ## 3. Formato de Mensajes Internos (Referencia Breve)
