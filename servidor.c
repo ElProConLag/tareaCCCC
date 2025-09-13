@@ -261,7 +261,7 @@ int main(void) {
             int fd = clientes[i].fd_c2s;
             if (!FD_ISSET(fd, &rfds)) continue;
 
-            // Se leen lneas disponibles, se esta utilizando FILE* temporal
+            // Se leen líneas disponibles, se está utilizando FILE* temporal
             FILE *fin = fdopen(dup(fd), "r");
             if (!fin) continue;
             while (fgets(linea, sizeof(linea), fin)) {
