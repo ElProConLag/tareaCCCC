@@ -1,6 +1,6 @@
 #include "comun.h"
 
-#define MAX_ENTRADAS_REPORTES 256  // evita numero maagico 256
+#define MAX_ENTRADAS_REPORTES 256  // evita numero mágico 256
 
 typedef struct {
     pid_t pid;
