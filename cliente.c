@@ -192,7 +192,7 @@ static void bucle(void) {
                     sscanf(buf_in, "/report %d",     &objetivo) != 1) {
                     printf("Uso: /reportar <pid>\n");
                 } else if (objetivo > 0) {
-                    enviar_report(objetivo);   // NO envia mensaje, sino  que "reportar <pid>\n"
+                    enviar_report(objetivo);   // NO envia mensaje, sino que "reportar <pid>\n"
                 } else {
                     printf("Uso: /reportar <pid>\n");
                 }
