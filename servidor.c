@@ -252,7 +252,7 @@ int main(void) {
             while (fgets(linea, sizeof(linea), rep_in)) {
                 manejar_linea_reportes(linea);
             }
-            clearerr(rep_in); // si no hay nada maas, limpiar error / EOF
+            clearerr(rep_in); // si no hay nada más, limpiar error / EOF
         }
 
         // clientes
